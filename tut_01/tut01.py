@@ -2,293 +2,230 @@ import streamlit as st
 import pandas as pd
 import zipfile
 import re
-from collections import defaultdict
 from io import BytesIO
+from typing import Dict, List, Any
+from itertools import chain, zip_longest
 
-def css(path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        pass
+class GroupingStrategy:
 
+    def _partition_sizes(self, item_count: int, group_count: int) -> List[int]:
+        if group_count <= 0: return []
+        base, rem = divmod(item_count, group_count)
+        return [base + 1 if i < rem else base for i in range(group_count)]
 
-def br_from_roll(roll) -> str:
-    s = str(roll).strip().upper()
-    m = re.match(r'^\w{4}(\w{2})', s)
-    return m.group(1) if m else "UNKNOWN"
+    def create(self, student_df: pd.DataFrame, num_groups: int) -> Dict[str, List[Dict]]:
+        raise NotImplementedError("Each strategy must implement its own create method.")
 
-def _sizes(n: int, k: int) -> list[int]:
-    q, r = divmod(n, k)
-    return [q + (i < r) for i in range(k)]
+class DiverseMixStrategy(GroupingStrategy):
 
-def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
-    drop_cols = []
-    for col in df.columns:
-        if str(col).startswith("Unnamed"):
-            drop_cols.append(col)
-        elif str(col).strip().lower() == "unique":
-            drop_cols.append(col)
-        elif col is None or str(col) == "nan":
-            drop_cols.append(col)
-        elif df[col].isna().sum() == len(df):
-            drop_cols.append(col)
-    if drop_cols:
-        df = df.drop(columns=drop_cols)
-    return df
+    def create(self, student_df: pd.DataFrame, num_groups: int) -> Dict[str, List[Dict]]:
+        groups = {f'Group_{i+1}': [] for i in range(num_groups)}
+        sizes = self._partition_sizes(len(student_df), num_groups)
 
+        branch_lists = [
+            list(records.to_dict('records'))
+            for _, records in student_df.groupby('Branch')
+        ]
+        
+        interleaved_students = list(
+            chain.from_iterable(
+                filter(None, student) for student in zip_longest(*branch_lists)
+            )
+        )
+        
+        student_idx = 0
+        for i in range(num_groups):
+            group_name = f'Group_{i+1}'
+            num_to_add = sizes[i]
+            groups[group_name] = interleaved_students[student_idx : student_idx + num_to_add]
+            student_idx += num_to_add
+            
+        return groups
 
-# grouping
-def g_mx_br(df: pd.DataFrame, k: int) -> dict:
-    out = {f"Group_{i+1}": [] for i in range(k)}
-    buckets = {br: rows.to_dict("records") for br, rows in df.groupby("Branch")}
-    brs = sorted(buckets.keys())
-    tgt = _sizes(len(df), k)
+class SequentialFillStrategy(GroupingStrategy):
 
-    for i in range(k):
-        g = f"Group_{i+1}"
-        cap = tgt[i]
-        while len(out[g]) < cap:
-            moved = False
-            for br in brs:
-                if len(out[g]) >= cap:
-                    break
-                if buckets[br]:
-                    out[g].append(buckets[br].pop(0))
-                    moved = True
-            if not moved:
-                break
-    return out
+    def create(self, student_df: pd.DataFrame, num_groups: int) -> Dict[str, List[Dict]]:
+        groups = {f'Group_{i+1}': [] for i in range(num_groups)}
+        sizes = self._partition_sizes(len(student_df), num_groups)
+        
+        sorted_students = student_df.sort_values('Branch').to_dict('records')
+        
+        student_idx = 0
+        for i in range(num_groups):
+            group_name = f'Group_{i+1}'
+            num_to_add = sizes[i]
+            groups[group_name] = sorted_students[student_idx : student_idx + num_to_add]
+            student_idx += num_to_add
 
+        return groups
 
-def g_mx_uni(df: pd.DataFrame, k: int) -> dict:
-    out = {f"Group_{i+1}": [] for i in range(k)}
-    tgt = _sizes(len(df), k)
-    d = df.sort_values("Branch")
-    stu_lst = d.to_dict("records")
-    gx = 0
-    for rec in stu_lst:
-        gn = f"Group_{gx+1}"
-        out[gn].append(rec)
-        if len(out[gn]) >= tgt[gx] and gx < k - 1:
-            gx += 1
-    return out
+class ReportGenerator:
+    
+    def __init__(self, student_df: pd.DataFrame):
+        self.student_df = student_df
+        self.all_branches = sorted(student_df['Branch'].unique())
 
-
-def g_full_br(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    return {br: rows for br, rows in df.groupby("Branch")}
-
-
-def mk_sum(groups: dict, df: pd.DataFrame) -> pd.DataFrame:
-    brs = sorted(df["Branch"].unique())
-    rows = []
-    for gn, members in groups.items():
-        row = {"Group": gn}
-        tot = 0
-        if members:
-            gdf = pd.DataFrame(members)
-            if "Branch" in gdf.columns:
-                vc = gdf["Branch"].value_counts()
-                vc_map = vc.to_dict()
-                for br in brs:
-                    v = int(vc_map.get(br, 0))
-                    row[br] = v
-                    tot += v
+    def _build_summary(self, groups: Dict) -> pd.DataFrame:
+        summary_data = []
+        for name, members in groups.items():
+            row = {'Group': name, 'Total': len(members)}
+            if members:
+                counts = pd.Series(m['Branch'] for m in members).value_counts()
+                row.update({b: counts.get(b, 0) for b in self.all_branches})
             else:
-                for br in brs:
-                    row[br] = 0
-        else:
-            for br in brs:
-                row[br] = 0
-        row["Total"] = tot
-        rows.append(row)
-    return pd.DataFrame(rows)
+                row.update({b: 0 for b in self.all_branches})
+            summary_data.append(row)
+        
+        df = pd.DataFrame(summary_data)
+        
+        if 'Total' in df.columns:
+            cols = [col for col in df.columns if col != 'Total'] + ['Total']
+            df = df[cols]
+            
+        return df
+
+    def create_zip_archive(self, diverse_groups: Dict, sequential_groups: Dict) -> bytes:
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            
+            # Package diverse mix groups
+            for name, members in diverse_groups.items():
+                if members:
+                    zf.writestr(f'group_branch_wise_mix/{name}.csv', pd.DataFrame(members).to_csv(index=False))
+
+            # Package sequential fill groups
+            for name, members in sequential_groups.items():
+                if members:
+                    zf.writestr(f'group_uniform_mix/{name}.csv', pd.DataFrame(members).to_csv(index=False))
+
+            # Package full branchwise lists
+            for branch, data in self.student_df.groupby('Branch'):
+                zf.writestr(f'full_branchwise/{branch}.csv', data.to_csv(index=False))
+
+            # Create and package Excel summary
+            summary_diverse = self._build_summary(diverse_groups)
+            summary_sequential = self._build_summary(sequential_groups)
+
+            excel_buffer = BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                summary_diverse.to_excel(writer, sheet_name='Branch_Mix_Summary', index=False)
+                summary_sequential.to_excel(writer, sheet_name='Uniform_Mix_Summary', index=False)
+            zf.writestr('summary.xlsx', excel_buffer.getvalue())
+
+        buffer.seek(0)
+        return buffer.getvalue()
+
+class AppManager:
+
+    def __init__(self):
+        st.set_page_config(page_title="Student Grouping Engine", layout="wide")
+        if 'results' not in st.session_state:
+            st.session_state.results = None
+
+    def _load_data(self, uploaded_file) -> pd.DataFrame:
+        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        
+        # --- Cleaning Logic ---
+        df = df.dropna(axis=1, how='all')
+        
+        cols_to_drop = [
+            col for col in df.columns 
+            if str(col).startswith('Unnamed') or str(col).strip().lower() == 'unique'
+        ]
+        df = df.drop(columns=cols_to_drop)
+
+        if 'Roll' not in df.columns:
+            raise ValueError("Input file must contain a 'Roll' column.")
+        df['Branch'] = df['Roll'].apply(lambda r: re.match(r'^\w{4}(\w{2})', str(r).strip().upper()).group(1) if re.match(r'^\w{4}(\w{2})', str(r).strip().upper()) else "UNKNOWN")
+        return df
+
+    def _render_data_preview(self, df: pd.DataFrame):
+        st.subheader("Data Preview")
+        st.dataframe(df.head(), use_container_width=True, hide_index=True)
+        st.subheader("Branch Distribution")
+        st.dataframe(df['Branch'].value_counts(), use_container_width=True)
+
+    def _render_results(self, results: Dict):
+        st.success("Group generation complete!")
+        
+        tabs = st.tabs(["Branch Mix", "Uniform Mix", "Branchwise", "Summaries"])
+        
+        with tabs[0]:
+            self._display_group_details(results['diverse_groups'], "Branch Mix Group Details")
+        with tabs[1]:
+            self._display_group_details(results['sequential_groups'], "Uniform Mix Group Details")
+        with tabs[2]:
+            st.subheader("Complete Student Lists by Branch")
+            for branch, data in results['df'].groupby('Branch'):
+                with st.expander(f"Branch: {branch} ({len(data)} students)"):
+                    st.dataframe(data, use_container_width=True, hide_index=True)
+        with tabs[3]:
+            st.subheader("Branch Mix Summary")
+            st.dataframe(results['diverse_summary'], use_container_width=True, hide_index=True)
+            st.subheader("Uniform Mix Summary")
+            st.dataframe(results['sequential_summary'], use_container_width=True, hide_index=True)
 
 
-# zip 
-def mk_pkg(df: pd.DataFrame, k: int):
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # branchwise full
-        full = g_full_br(df)
-        for br, data in full.items():
-            zf.writestr(f"full_branchwise/{br}.csv", _clean_df(data).to_csv(index=False))
+    def _display_group_details(self, groups: Dict, title: str):
+        st.subheader(title)
+        rows = []
+        for name, members in groups.items():
+            if not members: continue
+            counts = pd.Series([s['Branch'] for s in members]).value_counts().sort_index()
+            dist_str = ', '.join([f"{b}: {c}" for b, c in counts.items()])
+            rows.append({'Group': name, 'Size': len(members), 'Distribution': dist_str})
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        # strategies
-        bmix = g_mx_br(df, k)
-        for gn, members in bmix.items():
-            if members:
-                zf.writestr(
-                    f"group_branch_wise_mix/{gn}.csv",
-                    _clean_df(pd.DataFrame(members)).to_csv(index=False),
-                )
+    def run(self):
+        st.title("Student Grouping Engine")
+        
+        uploaded_file = st.file_uploader("Upload Student Roster", type=['csv', 'xlsx'])
+        num_groups = st.number_input("Number of Groups to Create", min_value=1, max_value=100, value=5)
 
-        umix = g_mx_uni(df, k)
-        for gn, members in umix.items():
-            if members:
-                zf.writestr(
-                    f"group_uniform_mix/{gn}.csv",
-                    _clean_df(pd.DataFrame(members)).to_csv(index=False),
-                )
-
-        # summaries
-        bsum = _clean_df(mk_sum(bmix, df))
-        usum = _clean_df(mk_sum(umix, df))
-
-        xbuf = BytesIO()
-        wrote_excel = False
-        for engine in ("xlsxwriter", "openpyxl", None):
-            try:
-                with pd.ExcelWriter(xbuf, engine=engine) as wr:
-                    bsum.to_excel(wr, sheet_name="Branch_Mix", index=False)
-                    usum.to_excel(wr, sheet_name="Uniform_Mix", index=False)
-                zf.writestr("summary/summary.xlsx", xbuf.getvalue())
-                wrote_excel = True
-                break
-            except Exception:
-                xbuf = BytesIO()
-                continue
-
-        if not wrote_excel:
-            zf.writestr("summary/Branch_Mix.csv", bsum.to_csv(index=False))
-            zf.writestr("summary/Uniform_Mix.csv", usum.to_csv(index=False))
-
-    buf.seek(0)
-    return buf.getvalue(), bmix, umix, bsum, usum
-
-
-def show_mx(groups: dict, title: str) -> None:
-    st.markdown(f'<div class="sec-title">{title}</div>', unsafe_allow_html=True)
-    tot = 0
-    br_tot = defaultdict(int)
-    rows = []
-    for gn, members in groups.items():
-        if not members:
-            continue
-        gdf = pd.DataFrame(members)
-        sz = len(members)
-        tot += sz
-        dist = gdf["Branch"].value_counts().sort_index()
-        info = ", ".join([f"{b}: {int(c)}" for b, c in dist.items()])
-        rows.append({"Group": gn, "Size": sz, "Branch Distribution": info})
-        for b, c in dist.items():
-            br_tot[b] += int(c)
-
-    if rows:
-        df_a = pd.DataFrame(rows)
-        st.dataframe(df_a, use_container_width=True, hide_index=True)
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("Total Students", tot)
-        with c2:
-            active = sum(1 for v in groups.values() if v)
-            st.metric("Active Groups", active)
-        with c3:
-            avg = (tot // active) if active else 0
-            st.metric("Avg Group Size", avg)
-        with c4:
-            st.metric("Branches", len(br_tot))
-
-
-# main function
-def main():
-    st.set_page_config(page_title="Student Grouping Portal", layout="wide")
-    css("styles.css")
-    st.markdown(
-        "<h1 style='text-align: center; font-size: 36px; font-weight: bold;'>🎓 Student Grouping System</h1>",
-        unsafe_allow_html=True,
-    )
-    st.write("Upload student data and generate structured groups")
-
-    # File uploader (top)
-    uf = st.file_uploader(
-        "Upload Data",
-        type=["csv", "xlsx"],
-        help="File must contain Roll, Name, Email columns",
-    )
-
-    ng = st.number_input(
-        "Number of Groups",
-        min_value=1,
-        max_value=50,
-        value=5,
-        step=1,
-    )
-
-    if not uf:
-        st.info("Upload a CSV or XLSX file to continue.")
-        return
-
-    try:
-        if uf.name.endswith(".csv"):
-            df = pd.read_csv(uf)
-        else:
-            df = pd.read_excel(uf)
-
-        df = _clean_df(df)
-        if "Roll" not in df.columns:
-            st.error("Missing 'Roll' column in file!")
+        if not uploaded_file:
+            st.info("Upload a student data file to begin.")
             return
 
-        df["Branch"] = df["Roll"].apply(br_from_roll)
+        try:
+            student_df = self._load_data(uploaded_file)
+            self._render_data_preview(student_df)
 
-        st.success(f"Successfully loaded {len(df)} students from {uf.name}")
+            if st.button("Generate Groups & Download Package", type="primary", use_container_width=True):
+                with st.spinner("Generating all reports and packages..."):
+                    # Generate groups and summaries once
+                    diverse_groups = DiverseMixStrategy().create(student_df, num_groups)
+                    sequential_groups = SequentialFillStrategy().create(student_df, num_groups)
+                    
+                    reporter = ReportGenerator(student_df)
+                    diverse_summary = reporter._build_summary(diverse_groups)
+                    sequential_summary = reporter._build_summary(sequential_groups)
 
-        cols_show = [c for c in ["Roll", "Name", "Email", "Branch"] if c in df.columns]
+                    zip_bytes = reporter.create_zip_archive(diverse_groups, sequential_groups)
+                    
+                    # Store all results in session state
+                    st.session_state.results = {
+                        'zip': zip_bytes, 
+                        'df': student_df,
+                        'diverse_groups': diverse_groups,
+                        'sequential_groups': sequential_groups,
+                        'diverse_summary': diverse_summary,
+                        'sequential_summary': sequential_summary
+                    }
 
-        a, b = st.columns([2, 1])
-        with a:
-            st.subheader("Data Overview")
-            st.dataframe(df[cols_show].head(10), use_container_width=True, hide_index=True)
-        with b:
-            st.subheader("Branch Distribution")
-            bc = df["Branch"].value_counts().sort_index()
-            st.dataframe(bc.reset_index().rename(columns={"index": "Branch", "Branch": "Count"}), use_container_width=True)
+            if st.session_state.results:
+                self._render_results(st.session_state.results)
+                st.download_button(
+                    label="Download Full Package (.zip)",
+                    data=st.session_state.results['zip'],
+                    file_name=f"student_groups_{num_groups}_groups.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
 
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Total Students", len(df))
-        with m2:
-            st.metric("Number of Groups", ng)
-        with m3:
-            avg = (len(df) // ng) if ng else 0
-            st.metric("Avg Students/Group", avg)
-        with m4:
-            st.metric("Unique Branches", df["Branch"].nunique())
-
-        if st.button("Generate Groups", type="primary", use_container_width=True):
-            with st.spinner("Generating groups..."):
-                zdata, bmix, umix, bsum, usum = mk_pkg(df, ng)
-
-            st.success("Groups generated successfully!")
-
-            t1, t2, t3, t4 = st.tabs(["Branch-wise Mix", "Uniform Mix", "Summary Tables", "Full Branch-wise"])
-            with t1:
-                show_mx(bmix, "Branch-wise Mix Groups")
-            with t2:
-                show_mx(umix, "Uniform Mix Groups")
-            with t3:
-                st.subheader("Branch-wise Mix Summary")
-                st.dataframe(bsum, use_container_width=True, hide_index=True)
-                st.subheader("Uniform Mix Summary")
-                st.dataframe(usum, use_container_width=True, hide_index=True)
-            with t4:
-                full = g_full_br(df)
-                for br, chunk in full.items():
-                    with st.expander(f"Branch {br} ({len(chunk)} students)"):
-                        st.dataframe(chunk[cols_show], use_container_width=True, hide_index=True)
-
-            st.download_button(
-                label="Download All Files (ZIP)",
-                data=zdata,
-                file_name=f"student_groups_{ng}_groups.zip",
-                mime="application/zip",
-                type="primary",
-                use_container_width=True,
-            )
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-    main()
+    app = AppManager()
+    app.run()
