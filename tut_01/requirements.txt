@@ -1,6 +1,4 @@
 streamlit
 pandas
-zipfile
-re
-collections
-io
+openpyxl
+xlsxwriter
