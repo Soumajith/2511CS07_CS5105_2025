@@ -1,0 +1,39 @@
+.main > div {
+    padding-top: 1rem;
+}
+.metric-card {
+    background-color: #00000;
+    border: 1px solid #dee2e6;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    text-align: center;
+    margin: 0.5rem 0;
+}
+.success-box {
+    background: #d4edda;
+    color: #155724;
+    padding: 1rem;
+    border-radius: 5px;
+    border-left: 4px solid #28a745;
+    margin: 1rem 0;
+}
+.sec-title {
+    background: #00000;
+    padding: 0.8rem;
+    border-radius: 5px;
+    font-weight: 600;
+    margin: 1rem 0 0.5rem 0;
+    border-left: 3px solid #007bff;
+}
+.info-box {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+}
+.download-area {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px dashed #007bff;
+    border-radius: 5px;
+}
