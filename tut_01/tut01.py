@@ -5,10 +5,12 @@ import re
 from collections import defaultdict
 from io import BytesIO
 
-
-def css(path: str) -> None:
-    with open(path, "r", encoding="utf-8") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+def css(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    except FileNotFoundError:
+        st.warning(f"⚠️ CSS file not found: {path}. Using default Streamlit style.")
 
 
 def br_from_roll(roll) -> str:
