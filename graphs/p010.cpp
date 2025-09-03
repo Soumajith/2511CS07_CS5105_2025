@@ -26,6 +26,7 @@ public:
         b = findSet(b);
         if (a != b)
             parent[b] = a; 
+    }
 };
 
 class Solution {
