@@ -1,4 +1,3 @@
-// A C++ Program to detect cycle in an undirected graph
 #include <bits/stdc++.h>
 using namespace std;
 
