@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  guide_alloc:
+    build: .
+    ports:
+      - '8501:8501'
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    restart: unless-stopped
