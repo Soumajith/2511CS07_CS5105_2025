@@ -7,3 +7,4 @@ Subject Code: CS 5105 <br/>
 
 ## Assignment 1 - Streamlite App
 Link: https://studentgroupingtool.streamlit.app
+Link: https://guideallocation.streamlit.app
