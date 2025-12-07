@@ -1,4 +1,4 @@
-# modules/utils.py
+
 import os
 import zipfile
 import shutil
@@ -9,16 +9,42 @@ import logging
 
 LOG = logging.getLogger(__name__)
 
+
+
+def find_assets_dir() -> Path:
+    # 1) env var override
+    env = os.environ.get("SEAT_ASSETS_DIR") or os.environ.get("SEAT_ASSETS")
+    if env:
+        p = Path(env).expanduser()
+        return p
+
+    # 2) search sensible locations
+    module_dir = Path(__file__).resolve().parent            # modules/
+    project_root = module_dir.parent                        # project root
+    candidates = [
+        module_dir / "assets",        # modules/assets
+        project_root / "assets",      # project_root/assets
+        Path.cwd() / "assets",        # cwd/assets
+    ]
+    for cand in candidates:
+        if cand.exists() and cand.is_dir():
+            return cand
+
+    # default to project_root/assets (we'll create it later if needed)
+    return project_root / "assets"
+
+
 MODULE_ROOT = Path(__file__).resolve().parent
-ASSETS_DIR = MODULE_ROOT / "assets"
+ASSETS_DIR = find_assets_dir()
 PLACEHOLDER = ASSETS_DIR / "nopic.jpg"
 
+# DEBUG PRINTS
+print("DEBUG → ASSETS_DIR =", ASSETS_DIR)
+print("DEBUG → PLACEHOLDER =", PLACEHOLDER)
+print("DEBUG → PLACEHOLDER exists:", PLACEHOLDER.exists())
 
 def ensure_assets_placeholder():
-    """
-    Ensure assets folder and placeholder image exist. Create a simple placeholder image if PIL available.
-    Uses ImageDraw.textbbox (Pillow >= 10 compatible).
-    """
+
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     if PLACEHOLDER.exists():
         return str(PLACEHOLDER)
@@ -106,18 +132,32 @@ def create_final_zip(output_root: str, output_name: str) -> str:
     return str(out_zip_path)
 
 
-def get_photo_for_roll(photos_dir: str, roll: str):
-    # fallback to project-level /photos directory if photos_dir is empty
-    if not photos_dir:
-        MODULE_ROOT = Path(__file__).resolve().parent.parent   # go from modules/ → code/
-        photos_dir = MODULE_ROOT.parent / "photos"
 
+# --- replace the get_photo_for_roll function's fallback logic with this ---
+def get_photo_for_roll(photos_dir: str, roll: str):
+    # If caller supplied photos_dir and it is non-empty, use it.
+    photos_path = None
+    if photos_dir:
+        photos_path = Path(photos_dir)
+
+    # If not supplied or doesn't exist, try project-level photos folder (project_root/photos)
+    if photos_path is None or not photos_path.exists():
+        project_root = Path(__file__).resolve().parent.parent
+        candidate = project_root / "photos"
+        if candidate.exists():
+            photos_path = candidate
+
+    # finally, fallback to current directory
+    if photos_path is None or not photos_path.exists():
+        photos_path = Path(".")
+
+    # ensure assets placeholder is available (this will create ASSETS_DIR if necessary)
     placeholder = ensure_assets_placeholder()
+
     base = (str(roll) or "").strip()
     if not base:
         return placeholder
 
-    photos_path = Path(photos_dir) if photos_dir else Path(".")
     # direct candidates
     for ext in ("jpg", "jpeg", "png"):
         p = photos_path / f"{base}.{ext}"
@@ -127,12 +167,16 @@ def get_photo_for_roll(photos_dir: str, roll: str):
         if p_up.exists():
             return str(p_up)
 
-    # normalized search
-    norm = base.replace(" ", "").replace(".", "").lower()
-    for p in photos_path.glob("*"):
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}:
-            stem = p.stem.lower()
-            if norm == stem or base.lower() == stem or base.lower() in p.name.lower():
-                return str(p)
+    # normalized search through photos_path
+    try:
+        norm = base.replace(" ", "").replace(".", "").lower()
+        for p in photos_path.glob("*"):
+            if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                stem = p.stem.lower()
+                if norm == stem or base.lower() == stem or base.lower() in p.name.lower():
+                    return str(p)
+    except Exception:
+        LOG.exception("Error scanning photos_dir %s", photos_path)
 
+    # final fallback to placeholder
     return placeholder

@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-Command-line version of the Streamlit exam seating generator.
-Performs:
-    1. Reads and converts workbook (in_timetable, in_course_roll_mapping, etc.)
-    2. Runs process_master_excel()
-    3. Generates PDFs
-    4. Packs final ZIP into output directory
-"""
-
 import argparse
 import tempfile
 import os

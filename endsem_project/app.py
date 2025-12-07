@@ -1,4 +1,3 @@
-# app.py (modified with logging to app.log)
 import streamlit as st
 import tempfile
 import zipfile
@@ -10,12 +9,10 @@ import pandas as pd
 from datetime import datetime
 import logging
 
-# -------------------- Logging configuration --------------------
-# write logs to console AND to app.log next to this file
 BASE_DIR = Path(__file__).resolve().parent
 LOG_FILE = BASE_DIR / "app.log"
 
-# Remove existing handlers (useful when reloading in dev)
+
 for h in logging.root.handlers[:]:
     logging.root.removeHandler(h)
 
@@ -24,20 +21,17 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(),                       # console
-        logging.FileHandler(str(LOG_FILE), mode="w"),  # file (overwrites each run)
+        logging.FileHandler(str(LOG_FILE), mode="w"),  
     ],
 )
 
 LOG = logging.getLogger(__name__)
 LOG.info("Logging initialized. Writing logs to %s", LOG_FILE)
-# --------------------------------------------------------------
 
-# local module imports (assumes modules package exists)
 from modules.seating import process_master_excel
 from modules.pdf_gen import generate_pdfs_for_output_dir
 from modules.utils import safe_extract_photos_zip, create_final_zip, setup_output_dir
 
-# Pillow used to create placeholder image at runtime if missing
 try:
     from PIL import Image, ImageDraw, ImageFont
     PIL_AVAILABLE = True
